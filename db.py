@@ -36,21 +36,11 @@ def _fix_turso_url(raw_url: str) -> str:
 
 
 def _validate_url(url: str, label: str):
-    """Crash early with a clear message if the URL is empty or placeholder."""
+    """Crash early with a clear message if the URL is empty."""
     if not url:
         msg = f"[DB] ❌ {label} URL is EMPTY. Set the env var in Railway."
         print(msg, file=sys.stderr)
         raise RuntimeError(msg)
-    placeholders = ("placeholder", "example.com", "your-db", "tursocoredburl", "tursogmaildburl")
-    low = url.lower()
-    for ph in placeholders:
-        if ph in low:
-            msg = (
-                f"[DB] ❌ {label} URL looks like a placeholder: {url}\n"
-                f"     Set a real Turso database URL in Railway env vars."
-            )
-            print(msg, file=sys.stderr)
-            raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
