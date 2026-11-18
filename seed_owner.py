@@ -15,11 +15,11 @@ except ImportError:
     pass
 
 try:
-    import libsql_client
+    import psycopg2
     from passlib.context import CryptContext
 except ImportError:
     print("ERROR: Required packages not installed.")
-    print("Run: pip install libsql-client passlib[bcrypt]")
+    print("Run: pip install psycopg2-binary passlib[bcrypt]")
     sys.exit(1)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -31,32 +31,14 @@ def main():
     print("=" * 50)
     print()
 
-    # Check env vars (accept both naming conventions)
-    db_url = (
-        os.environ.get("TURSO_CORE_DB_URL")
-        or os.environ.get("TURSO_CORE_DATABASE_URL")
-        or ""
-    )
-    db_token = (
-        os.environ.get("TURSO_CORE_DB_TOKEN")
-        or os.environ.get("TURSO_CORE_AUTH_TOKEN")
-        or ""
-    )
+    # Check env vars
+    db_url = os.environ.get("DATABASE_URL", "")
 
-    if not db_url or not db_token:
-        print("ERROR: Turso core DB URL and TOKEN must be set.")
-        print("Accepted env var names:")
-        print("  TURSO_CORE_DB_URL  or  TURSO_CORE_DATABASE_URL")
-        print("  TURSO_CORE_DB_TOKEN  or  TURSO_CORE_AUTH_TOKEN")
+    if not db_url:
+        print("ERROR: DATABASE_URL must be set.")
+        print("Set it in your .env file or environment variables.")
+        print("Format: postgresql://user:pass@host:port/dbname")
         sys.exit(1)
-
-    # Auto-fix URL protocol
-    if db_url.startswith("wss://"):
-        db_url = "libsql://" + db_url[len("wss://"):]
-    elif db_url.startswith("ws://"):
-        db_url = "libsql://" + db_url[len("ws://"):]
-    elif not db_url.startswith(("libsql://", "https://", "http://")):
-        db_url = "libsql://" + db_url
 
     # Get credentials
     username = input("Owner username: ").strip()
@@ -76,43 +58,47 @@ def main():
 
     # Connect to database
     try:
-        db = libsql_client.create_client_sync(url=db_url, auth_token=db_token)
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
     except Exception as e:
         print(f"ERROR connecting to database: {e}")
         sys.exit(1)
 
     # Check if owner already exists
-    existing = db.execute("SELECT id, username FROM admins WHERE role='owner'")
-    if existing.rows:
-        row = existing.rows[0]
-        print(f"\nWARNING: An owner account already exists: '{row[1]}' (ID: {row[0]})")
+    cur.execute("SELECT id, username FROM admins WHERE role='owner'")
+    existing = cur.fetchone()
+    if existing:
+        print(f"\nWARNING: An owner account already exists: '{existing[1]}' (ID: {existing[0]})")
         answer = input("Do you want to create another owner? (y/N): ").strip().lower()
         if answer != "y":
             print("Aborted.")
-            db.close()
+            cur.close(); conn.close()
             sys.exit(0)
 
     # Check duplicate username
-    dup = db.execute("SELECT id FROM admins WHERE username=?", [username])
-    if dup.rows:
+    cur.execute("SELECT id FROM admins WHERE username=%s", (username,))
+    if cur.fetchone():
         print(f"ERROR: Username '{username}' already exists.")
-        db.close()
+        cur.close(); conn.close()
         sys.exit(1)
 
     # Create owner
     hashed = pwd_context.hash(password)
-    db.execute(
-        "INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'owner')",
-        [username, hashed],
+    cur.execute(
+        "INSERT INTO admins (username, password_hash, role) VALUES (%s, %s, 'owner')",
+        (username, hashed),
     )
+    conn.commit()
 
-    created = db.execute("SELECT id FROM admins WHERE username=?", [username])
-    db.close()
+    cur.execute("SELECT id FROM admins WHERE username=%s", (username,))
+    created = cur.fetchone()
+    cur.close()
+    conn.close()
 
     print()
     print("✅ Owner account created successfully!")
     print(f"   Username: {username}")
-    print(f"   ID:       {created.rows[0][0]}")
+    print(f"   ID:       {created[0]}")
     print()
     print("You can now log in to the Desktop Admin Panel with these credentials.")
 

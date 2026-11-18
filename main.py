@@ -70,8 +70,8 @@ def _setup_dispatcher():
 async def lifespan(application: FastAPI):
     """Startup/shutdown events."""
     # -- startup --
-    logger.info("Initializing databases…")
-    db.init_databases()
+    logger.info("Initializing database…")
+    db.init_database()
 
     logger.info("Setting up bot dispatcher…")
     _setup_dispatcher()

@@ -1,6 +1,6 @@
 """
 config.py — All configuration loaded from environment variables.
-Supports multiple env-var naming conventions for Turso.
+Single Supabase PostgreSQL database.
 """
 
 import os
@@ -8,27 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Turso Databases (accept multiple naming conventions) ---
-TURSO_CORE_DB_URL = (
-    os.environ.get("TURSO_CORE_DB_URL")
-    or os.environ.get("TURSO_CORE_DATABASE_URL")
-    or ""
-)
-TURSO_CORE_DB_TOKEN = (
-    os.environ.get("TURSO_CORE_DB_TOKEN")
-    or os.environ.get("TURSO_CORE_AUTH_TOKEN")
-    or ""
-)
-TURSO_GMAIL_DB_URL = (
-    os.environ.get("TURSO_GMAIL_DB_URL")
-    or os.environ.get("TURSO_GMAIL_DATABASE_URL")
-    or ""
-)
-TURSO_GMAIL_DB_TOKEN = (
-    os.environ.get("TURSO_GMAIL_DB_TOKEN")
-    or os.environ.get("TURSO_GMAIL_AUTH_TOKEN")
-    or ""
-)
+# --- Supabase PostgreSQL ---
+# Standard connection string: postgresql://user:pass@host:port/dbname
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # --- Telegram Bot ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
