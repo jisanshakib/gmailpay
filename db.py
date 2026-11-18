@@ -3,10 +3,12 @@ db.py — Supabase PostgreSQL Database Connection Layer
 Uses psycopg2 (sync) via standard DATABASE_URL.
 
 Single database — both core tables (users, admins, bot_settings, withdrawals)
-and gmail tables (gmail_pool, submissions) live together.
+and gmail tables (recovery_emails, submissions) live together.
 """
 
 import sys
+import random
+import string
 import psycopg2
 import psycopg2.extras
 import config
@@ -41,6 +43,42 @@ def get_db():
         raise
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Gmail credential generator — used by assign_task
+# ---------------------------------------------------------------------------
+
+_FIRST_NAMES = [
+    "james", "mary", "john", "linda", "robert", "sarah", "michael", "emma",
+    "david", "olivia", "daniel", "sophia", "william", "mia", "joseph", "ava",
+    "alex", "noah", "lucas", "ethan", "liam", "mason", "aiden", "logan",
+    "ella", "chloe", "lily", "zoe", "hannah", "grace", "aria", "riley",
+]
+_LAST_NAMES = [
+    "smith", "johnson", "williams", "brown", "jones", "garcia", "miller",
+    "davis", "martinez", "anderson", "taylor", "thomas", "moore", "jackson",
+    "white", "harris", "clark", "lewis", "robinson", "walker", "hall", "lee",
+]
+
+
+def generate_gmail_credentials():
+    """Generate a random gmail address and 12-char password.
+
+    Returns (email, password) tuple.
+    Email format: firstname.lastnameXXXX@gmail.com
+    Password: 12 random alphanumeric + special chars
+    """
+    first = random.choice(_FIRST_NAMES)
+    last = random.choice(_LAST_NAMES)
+    digits = "".join(random.choices(string.digits, k=random.randint(3, 5)))
+    email = f"{first}.{last}{digits}@gmail.com"
+
+    # Generate a strong 12-char password
+    chars = string.ascii_letters + string.digits + "!@#$%&*"
+    password = "".join(random.choices(chars, k=12))
+
+    return email, password
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +147,12 @@ def init_database():
             )
         """)
 
-        # --- Gmail tables ---
+        # --- Gmail farming tables ---
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS gmail_pool (
-                id             SERIAL PRIMARY KEY,
-                email          TEXT UNIQUE NOT NULL,
-                password       TEXT NOT NULL,
-                recovery_email TEXT,
-                is_assigned    BOOLEAN DEFAULT FALSE
+            CREATE TABLE IF NOT EXISTS recovery_emails (
+                id          SERIAL PRIMARY KEY,
+                email       TEXT UNIQUE NOT NULL,
+                is_assigned BOOLEAN DEFAULT FALSE
             )
         """)
         cur.execute("""
@@ -126,6 +162,7 @@ def init_database():
                 submission_type TEXT NOT NULL CHECK(submission_type IN ('normal','2fa')),
                 email           TEXT UNIQUE NOT NULL,
                 password        TEXT NOT NULL,
+                recovery_email  TEXT,
                 secret_key_2fa  TEXT,
                 status          TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
                 submitted_at    TIMESTAMPTZ DEFAULT NOW()

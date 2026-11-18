@@ -69,11 +69,15 @@ class APIClient:
         return await self._request("GET", f"/api/bot/assign-task/{telegram_id}")
 
     async def submit_account(self, telegram_id: int, submission_type: str,
-                             email: str, password: str, secret_key_2fa: str = None) -> dict:
+                             email: str, password: str,
+                             secret_key_2fa: str = None,
+                             recovery_email: str = None) -> dict:
         payload = {"telegram_id": telegram_id, "submission_type": submission_type,
                     "email": email, "password": password}
         if secret_key_2fa:
             payload["secret_key_2fa"] = secret_key_2fa
+        if recovery_email:
+            payload["recovery_email"] = recovery_email
         return await self._request("POST", "/api/bot/submit", json=payload)
 
     async def request_withdrawal(self, telegram_id: int, method: str,

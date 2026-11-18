@@ -1,5 +1,8 @@
 """
 handlers.py — All Telegram bot handlers: /start, tasks, balance, profile, withdrawals.
+
+UPDATED: Task assignment now shows auto-generated email + password + recovery email.
+         Submission FSM captures recovery_email from assigned data.
 """
 
 import logging
@@ -82,8 +85,8 @@ async def cmd_start(message: Message):
 async def cmd_help(message: Message):
     await message.answer(
         "<b>ℹ️ How to use this bot</b>\n\n"
-        "1️⃣ <b>Get Task</b> — receive a Gmail account to complete\n"
-        "2️⃣ Complete the account following the instructions\n"
+        "1️⃣ <b>Get Task</b> — receive a Gmail account to create\n"
+        "2️⃣ Create the account using the given email, password & recovery\n"
         "3️⃣ <b>Submit</b> the completed account (Normal or 2FA)\n"
         "4️⃣ Wait for admin approval\n"
         "5️⃣ <b>Withdraw</b> your earnings!\n\n"
@@ -188,15 +191,20 @@ async def btn_get_task(message: Message, state: FSMContext):
 
     await wait.edit_text(
         f"📋 <b>Task Assigned!</b>\n\n"
-        f"📧 <b>Email:</b> <code>{result.get('email','N/A')}</code>\n"
-        f"🔑 <b>Password:</b> <code>{result.get('password','N/A')}</code>\n"
-        f"🔄 <b>Recovery:</b> <code>{result.get('recovery_email','N/A')}</code>\n\n"
+        f"📧 <b>Create this Gmail:</b> <code>{result.get('email','N/A')}</code>\n"
+        f"🔑 <b>Use this Password:</b> <code>{result.get('password','N/A')}</code>\n"
+        f"🔄 <b>Recovery Email:</b> <code>{result.get('recovery_email','N/A')}</code>\n\n"
         f"💰 <b>Rates:</b>\n"
         f"   Normal: <b>${normal_rate:.2f}</b> | 2FA: <b>${two_fa_rate:.2f}</b>\n\n"
-        "✅ Complete this account, then choose submission type:",
+        "✅ Create the account with the info above, then choose submission type:",
         parse_mode="HTML", reply_markup=submission_type_keyboard(),
     )
-    await state.update_data(assigned_email=result.get("email"), assigned_password=result.get("password"))
+    # Save assigned data for submission — including recovery_email
+    await state.update_data(
+        assigned_email=result.get("email"),
+        assigned_password=result.get("password"),
+        assigned_recovery_email=result.get("recovery_email"),
+    )
     await state.set_state(SubmissionFSM.choosing_type)
 
 
@@ -246,7 +254,8 @@ async def _show_sub_confirm(message: Message, state: FSMContext):
     d = await state.get_data()
     lines = [f"📝 <b>Submission Confirmation ({d.get('submission_type','').upper()})</b>\n",
              f"📧 Email: <code>{d.get('email')}</code>",
-             f"🔑 Password: <code>{d.get('password')}</code>"]
+             f"🔑 Password: <code>{d.get('password')}</code>",
+             f"🔄 Recovery: <code>{d.get('assigned_recovery_email','N/A')}</code>"]
     if d.get("secret_key_2fa"):
         lines.append(f"🔐 2FA Key: <code>{d['secret_key_2fa']}</code>")
     lines.append("\nPlease confirm:")
@@ -260,7 +269,14 @@ async def cb_confirm_sub(cb: CallbackQuery, state: FSMContext):
     d = await state.get_data()
     await cb.message.edit_text("⏳ Submitting...")
     try:
-        await api.submit_account(cb.from_user.id, d["submission_type"], d["email"], d["password"], d.get("secret_key_2fa"))
+        await api.submit_account(
+            cb.from_user.id,
+            d["submission_type"],
+            d["email"],
+            d["password"],
+            d.get("secret_key_2fa"),
+            d.get("assigned_recovery_email"),
+        )
     except APIError as e:
         await cb.message.edit_text(f"❌ {e.detail}"); await state.clear(); return
     except Exception:

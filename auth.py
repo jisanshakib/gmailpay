@@ -45,6 +45,5 @@ def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(security)) -
     return {"id": int(p["sub"]), "username": p.get("username"), "role": p.get("role")}
 
 def require_owner(admin: dict = Depends(get_current_admin)) -> dict:
-    if admin.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner privileges required")
+    """All admins now have full owner-level access."""
     return admin

@@ -82,6 +82,7 @@ class SubmissionCreate(BaseModel):
     submission_type: str
     email: str
     password: str
+    recovery_email: Optional[str] = None
     secret_key_2fa: Optional[str] = None
 
 class SubmissionResponse(BaseModel):
@@ -90,25 +91,22 @@ class SubmissionResponse(BaseModel):
     submission_type: str
     email: str
     password: str
+    recovery_email: Optional[str] = None
     secret_key_2fa: Optional[str] = None
     status: str
     submitted_at: Optional[str] = None
 
 
-# ── Gmail Pool ───────────────────────────────────────────────────
-class GmailPoolEntry(BaseModel):
+# ── Recovery Emails (replaces Gmail Pool) ────────────────────────
+class RecoveryEmailEntry(BaseModel):
     email: str
-    password: str
-    recovery_email: Optional[str] = None
 
-class GmailPoolBulkUpload(BaseModel):
-    entries: List[GmailPoolEntry]
+class RecoveryEmailBulkUpload(BaseModel):
+    entries: List[RecoveryEmailEntry]
 
-class GmailPoolResponse(BaseModel):
+class RecoveryEmailResponse(BaseModel):
     id: int
     email: str
-    password: str
-    recovery_email: Optional[str] = None
     is_assigned: bool = False
 
 
@@ -129,8 +127,8 @@ class DashboardStats(BaseModel):
     total_users: int
     pending_submissions: int
     pending_withdrawals: int
-    pool_size: int
-    pool_available: int
+    recovery_total: int
+    recovery_available: int
 
 
 # ── Generic ──────────────────────────────────────────────────────

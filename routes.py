@@ -1,6 +1,10 @@
 """
 routes.py — All FastAPI routes in one file: bot-facing, admin, owner.
 Uses single Supabase PostgreSQL database via psycopg2.
+
+UPDATED: Gmail Pool replaced with Recovery Emails.
+         assign_task now auto-generates gmail + password,
+         picks a random unassigned recovery email, and returns all three.
 """
 
 import csv
@@ -12,11 +16,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from auth import get_current_admin, require_owner, hash_password, verify_password, create_access_token
-from db import get_db
+from db import get_db, generate_gmail_credentials
 from models import (
     AdminCreate, AdminLogin, AdminResponse, AssignTaskResponse,
     BalanceAdjustment, BalanceResponse, BotSettingsBulkUpdate,
-    DashboardStats, ExportRequest, GmailPoolBulkUpload, GmailPoolResponse,
+    DashboardStats, ExportRequest, RecoveryEmailBulkUpload, RecoveryEmailResponse,
     MessageResponse, SubmissionCreate, SubmissionResponse, TokenResponse,
     UserBanAction, UserRegister, UserResponse, WithdrawalRequest,
     WithdrawalResponse,
@@ -101,19 +105,22 @@ def assign_task(telegram_id: int, db=Depends(get_db)):
     if cur.fetchone():
         cur.close(); raise HTTPException(409, "⏳ You already have a pending submission. Wait for admin review.")
 
-    # 5. Dynamic Assignment — pick a RANDOM unassigned email from gmail_pool
+    # 5. Pick a RANDOM unassigned recovery email
     cur.execute(
-        "SELECT id,email,password,recovery_email FROM gmail_pool "
+        "SELECT id, email FROM recovery_emails "
         "WHERE is_assigned=FALSE ORDER BY RANDOM() LIMIT 1"
     )
-    pool = cur.fetchone()
-    if not pool:
+    recovery_row = cur.fetchone()
+    if not recovery_row:
         cur.close(); raise HTTPException(404, "😔 No available tasks right now. Try again later!")
 
-    # 6. Mark as assigned
-    cur.execute("UPDATE gmail_pool SET is_assigned=TRUE WHERE id=%s", (pool[0],))
+    # 6. Mark recovery email as assigned
+    cur.execute("UPDATE recovery_emails SET is_assigned=TRUE WHERE id=%s", (recovery_row[0],))
 
-    # 7. Fetch current rates from bot_settings
+    # 7. Auto-generate gmail credentials
+    gen_email, gen_password = generate_gmail_credentials()
+
+    # 8. Fetch current rates from bot_settings
     cur.execute("SELECT key_name, key_value FROM bot_settings WHERE key_name IN ('normal_rate','two_fa_rate')")
     rate_rows = cur.fetchall()
     rates = {r[0]: r[1] for r in rate_rows}
@@ -122,9 +129,9 @@ def assign_task(telegram_id: int, db=Depends(get_db)):
 
     cur.close()
     return AssignTaskResponse(
-        email=pool[1],
-        password=pool[2],
-        recovery_email=pool[3],
+        email=gen_email,
+        password=gen_password,
+        recovery_email=recovery_row[1],
         normal_rate=normal_rate,
         two_fa_rate=two_fa_rate,
     )
@@ -144,9 +151,9 @@ def submit_account(sub: SubmissionCreate, db=Depends(get_db)):
 
     try:
         cur.execute(
-            "INSERT INTO submissions (telegram_id,submission_type,email,password,secret_key_2fa,status) "
-            "VALUES (%s,%s,%s,%s,%s,'pending')",
-            (sub.telegram_id, sub.submission_type, sub.email, sub.password, sub.secret_key_2fa),
+            "INSERT INTO submissions (telegram_id,submission_type,email,password,recovery_email,secret_key_2fa,status) "
+            "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
+            (sub.telegram_id, sub.submission_type, sub.email, sub.password, sub.recovery_email, sub.secret_key_2fa),
         )
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
@@ -248,30 +255,23 @@ def list_submissions(
     type: Optional[str] = Query(None), status: Optional[str] = Query("pending"),
     admin: dict = Depends(get_current_admin), db=Depends(get_db),
 ):
-    q = "SELECT id,telegram_id,submission_type,email,password,secret_key_2fa,status,submitted_at FROM submissions WHERE 1=1"
+    q = ("SELECT id,telegram_id,submission_type,email,password,recovery_email,"
+         "secret_key_2fa,status,submitted_at FROM submissions WHERE 1=1")
     p: list = []
-    idx = 1
     if type:
-        q += f" AND submission_type=${idx}"; p.append(type); idx += 1
+        q += " AND submission_type=%s"; p.append(type)
     if status and status.lower() != "all":
-        q += f" AND status=${idx}"; p.append(status); idx += 1
-    # psycopg2 uses %s, rebuild
-    q_final = "SELECT id,telegram_id,submission_type,email,password,secret_key_2fa,status,submitted_at FROM submissions WHERE 1=1"
-    p2: list = []
-    if type:
-        q_final += " AND submission_type=%s"; p2.append(type)
-    if status and status.lower() != "all":
-        q_final += " AND status=%s"; p2.append(status)
-    q_final += " ORDER BY submitted_at DESC"
+        q += " AND status=%s"; p.append(status)
+    q += " ORDER BY submitted_at DESC"
 
     cur = db.cursor()
-    cur.execute(q_final, p2)
+    cur.execute(q, p)
     rows = cur.fetchall()
     cur.close()
     return [
         SubmissionResponse(id=r[0], telegram_id=r[1], submission_type=r[2], email=r[3],
-                           password=r[4], secret_key_2fa=r[5], status=r[6],
-                           submitted_at=str(r[7]) if r[7] else None)
+                           password=r[4], recovery_email=r[5], secret_key_2fa=r[6],
+                           status=r[7], submitted_at=str(r[8]) if r[8] else None)
         for r in rows
     ]
 
@@ -409,10 +409,12 @@ def ban_user(tid: int, action: UserBanAction, admin: dict = Depends(get_current_
     return MessageResponse(message=f"User {tid} {'banned' if action.ban else 'unbanned'}")
 
 
-@admin_router.get("/gmail-pool", response_model=list[GmailPoolResponse])
-def list_gmail_pool(assigned: Optional[bool] = Query(None),
-                    admin: dict = Depends(get_current_admin), db=Depends(get_db)):
-    q = "SELECT id,email,password,recovery_email,is_assigned FROM gmail_pool"
+# ── Recovery Emails (replaces Gmail Pool) ────────────────────────
+
+@admin_router.get("/recovery-emails", response_model=list[RecoveryEmailResponse])
+def list_recovery_emails(assigned: Optional[bool] = Query(None),
+                         admin: dict = Depends(get_current_admin), db=Depends(get_db)):
+    q = "SELECT id, email, is_assigned FROM recovery_emails"
     p: list = []
     if assigned is not None:
         q += " WHERE is_assigned=%s"; p.append(assigned)
@@ -421,19 +423,18 @@ def list_gmail_pool(assigned: Optional[bool] = Query(None),
     cur.execute(q, p)
     rows = cur.fetchall()
     cur.close()
-    return [GmailPoolResponse(id=r[0], email=r[1], password=r[2],
-                              recovery_email=r[3], is_assigned=bool(r[4]))
+    return [RecoveryEmailResponse(id=r[0], email=r[1], is_assigned=bool(r[2]))
             for r in rows]
 
 
-@admin_router.post("/gmail-pool/upload", response_model=MessageResponse)
-def upload_gmail_pool(bulk: GmailPoolBulkUpload, admin: dict = Depends(get_current_admin), db=Depends(get_db)):
+@admin_router.post("/recovery-emails/upload", response_model=MessageResponse)
+def upload_recovery_emails(bulk: RecoveryEmailBulkUpload,
+                           admin: dict = Depends(get_current_admin), db=Depends(get_db)):
     cur = db.cursor()
     added = skipped = 0
     for e in bulk.entries:
         try:
-            cur.execute("INSERT INTO gmail_pool (email,password,recovery_email) VALUES (%s,%s,%s)",
-                        (e.email, e.password, e.recovery_email))
+            cur.execute("INSERT INTO recovery_emails (email) VALUES (%s)", (e.email,))
             db.commit()
             added += 1
         except Exception as ex:
@@ -450,7 +451,7 @@ def upload_gmail_pool(bulk: GmailPoolBulkUpload, admin: dict = Depends(get_curre
 def export_submissions(req: ExportRequest, admin: dict = Depends(get_current_admin), db=Depends(get_db)):
     cur = db.cursor()
     cur.execute(
-        "SELECT id,telegram_id,submission_type,email,password,secret_key_2fa,submitted_at "
+        "SELECT id,telegram_id,submission_type,email,password,recovery_email,secret_key_2fa,submitted_at "
         "FROM submissions WHERE status='approved' AND submission_type=%s ORDER BY submitted_at ASC",
         (req.submission_type,),
     )
@@ -462,11 +463,11 @@ def export_submissions(req: ExportRequest, admin: dict = Depends(get_current_adm
     out = io.StringIO()
     w = csv.writer(out)
     if req.submission_type == "2fa":
-        w.writerow(["id", "telegram_id", "email", "password", "secret_key_2fa", "submitted_at"])
-        for r in rows: w.writerow([r[0], r[1], r[3], r[4], r[5], r[6]])
+        w.writerow(["id", "telegram_id", "email", "password", "recovery_email", "secret_key_2fa", "submitted_at"])
+        for r in rows: w.writerow([r[0], r[1], r[3], r[4], r[5], r[6], r[7]])
     else:
-        w.writerow(["id", "telegram_id", "email", "password", "submitted_at"])
-        for r in rows: w.writerow([r[0], r[1], r[3], r[4], r[6]])
+        w.writerow(["id", "telegram_id", "email", "password", "recovery_email", "submitted_at"])
+        for r in rows: w.writerow([r[0], r[1], r[3], r[4], r[5], r[7]])
 
     out.seek(0)
     fn = f"submissions_{req.submission_type}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
@@ -483,17 +484,17 @@ def dashboard_stats(admin: dict = Depends(get_current_admin), db=Depends(get_db)
     pending_submissions = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
     pending_withdrawals = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM gmail_pool")
-    pool_size = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM gmail_pool WHERE is_assigned=FALSE")
-    pool_available = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM recovery_emails")
+    recovery_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM recovery_emails WHERE is_assigned=FALSE")
+    recovery_available = cur.fetchone()[0]
     cur.close()
     return DashboardStats(
         total_users=total_users,
         pending_submissions=pending_submissions,
         pending_withdrawals=pending_withdrawals,
-        pool_size=pool_size,
-        pool_available=pool_available,
+        recovery_total=recovery_total,
+        recovery_available=recovery_available,
     )
 
 
