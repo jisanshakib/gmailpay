@@ -5,7 +5,6 @@ Runs both in a single process for Railway deployment.
 
 import asyncio
 import logging
-import os
 import sys
 
 import uvicorn
@@ -21,8 +20,6 @@ from aiogram.types import Update
 import config
 import db
 from bot_client import api as bot_api_client
-from handlers import router as handlers_router
-from middleware import BanCheckMiddleware, RateLimitMiddleware, AutoRegisterMiddleware
 from routes import bot_router, admin_router, owner_router
 
 logging.basicConfig(
@@ -33,24 +30,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-#  Bot setup
+#  Bot setup (lazy — router attached once inside _setup_dispatcher)
 # ---------------------------------------------------------------------------
 bot = Bot(
     token=config.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
+_dp_ready = False          # guard: attach router exactly once
 
-# Register middleware (order: auto-register → ban-check → rate-limit)
-dp.message.middleware(AutoRegisterMiddleware())
-dp.callback_query.middleware(AutoRegisterMiddleware())
-dp.message.middleware(BanCheckMiddleware())
-dp.callback_query.middleware(BanCheckMiddleware())
-dp.message.middleware(RateLimitMiddleware())
-dp.callback_query.middleware(RateLimitMiddleware())
 
-# Register handlers
-dp.include_router(handlers_router)
+def _setup_dispatcher():
+    """Attach handlers and middleware to the dispatcher exactly once."""
+    global _dp_ready
+    if _dp_ready:
+        return
+    _dp_ready = True
+
+    from handlers import router as handlers_router
+    from middleware import BanCheckMiddleware, RateLimitMiddleware, AutoRegisterMiddleware
+
+    # Middleware (order: auto-register → ban-check → rate-limit)
+    dp.message.middleware(AutoRegisterMiddleware())
+    dp.callback_query.middleware(AutoRegisterMiddleware())
+    dp.message.middleware(BanCheckMiddleware())
+    dp.callback_query.middleware(BanCheckMiddleware())
+    dp.message.middleware(RateLimitMiddleware())
+    dp.callback_query.middleware(RateLimitMiddleware())
+
+    # Handlers — only once
+    dp.include_router(handlers_router)
+    logger.info("Dispatcher ready: middleware + handlers attached.")
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +72,9 @@ async def lifespan(application: FastAPI):
     # -- startup --
     logger.info("Initializing databases…")
     db.init_databases()
+
+    logger.info("Setting up bot dispatcher…")
+    _setup_dispatcher()
 
     logger.info("Starting bot API client…")
     await bot_api_client.start()
@@ -132,7 +145,6 @@ app.include_router(owner_router)
 @app.post("/webhook")
 async def webhook_handler(request: Request) -> Response:
     """Receive Telegram updates via webhook."""
-    # Verify secret token if configured
     if config.WEBHOOK_SECRET:
         header_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if header_token != config.WEBHOOK_SECRET:
@@ -158,13 +170,14 @@ def root():
 
 
 # ---------------------------------------------------------------------------
-#  Run
+#  Run — pass app object directly, NOT string, to avoid re-import
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = config.PORT
     logger.info("Starting server on port %d", port)
+    _setup_dispatcher()       # ensure router attached before uvicorn starts
     uvicorn.run(
-        "main:app",
+        app,                  # pass app object directly — no re-import!
         host="0.0.0.0",
         port=port,
         log_level="info",
