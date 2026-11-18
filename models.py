@@ -141,3 +141,5 @@ class AssignTaskResponse(BaseModel):
     email: str
     password: str
     recovery_email: Optional[str] = None
+    normal_rate: float = 0.0
+    two_fa_rate: float = 0.0

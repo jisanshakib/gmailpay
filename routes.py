@@ -63,18 +63,22 @@ def get_bot_settings(db=Depends(get_db)):
 @bot_router.get("/assign-task/{telegram_id}", response_model=AssignTaskResponse)
 def assign_task(telegram_id: int, db=Depends(get_db)):
     cur = db.cursor()
+
+    # 1. Check user exists
     cur.execute(
         "SELECT is_banned,total_strikes,block_until FROM users WHERE telegram_id=%s",
         (telegram_id,),
     )
     row = cur.fetchone()
     if not row:
-        cur.close(); raise HTTPException(404, "User not found")
+        cur.close(); raise HTTPException(404, "User not found. Send /start first.")
     is_banned, strikes, block_until = row
 
+    # 2. Ban check
     if is_banned:
         cur.close(); raise HTTPException(403, "🚫 Your account has been banned.")
 
+    # 3. Block check (3-strike rule)
     if block_until:
         try:
             if hasattr(block_until, 'tzinfo'):
@@ -90,24 +94,40 @@ def assign_task(telegram_id: int, db=Depends(get_db)):
             cur.close(); raise HTTPException(403, f"⏳ Temporarily blocked due to strikes. Unblocks in {h}h {m}m.")
         cur.execute("UPDATE users SET block_until=NULL WHERE telegram_id=%s", (telegram_id,))
 
-    # Check pending submission
+    # 4. Zero Duplicate — check if user already has a pending submission
     cur.execute(
         "SELECT id FROM submissions WHERE telegram_id=%s AND status='pending'", (telegram_id,),
     )
     if cur.fetchone():
-        cur.close(); raise HTTPException(409, "You already have a pending submission. Wait for review.")
+        cur.close(); raise HTTPException(409, "⏳ You already have a pending submission. Wait for admin review.")
 
-    # Assign from pool
+    # 5. Dynamic Assignment — pick a RANDOM unassigned email from gmail_pool
     cur.execute(
-        "SELECT id,email,password,recovery_email FROM gmail_pool WHERE is_assigned=FALSE LIMIT 1"
+        "SELECT id,email,password,recovery_email FROM gmail_pool "
+        "WHERE is_assigned=FALSE ORDER BY RANDOM() LIMIT 1"
     )
     pool = cur.fetchone()
     if not pool:
-        cur.close(); raise HTTPException(404, "No available tasks right now. Try again later.")
+        cur.close(); raise HTTPException(404, "😔 No available tasks right now. Try again later!")
 
+    # 6. Mark as assigned
     cur.execute("UPDATE gmail_pool SET is_assigned=TRUE WHERE id=%s", (pool[0],))
+
+    # 7. Fetch current rates from bot_settings
+    cur.execute("SELECT key_name, key_value FROM bot_settings WHERE key_name IN ('normal_rate','two_fa_rate')")
+    rate_rows = cur.fetchall()
+    rates = {r[0]: r[1] for r in rate_rows}
+    normal_rate = float(rates.get("normal_rate", "0.30"))
+    two_fa_rate = float(rates.get("two_fa_rate", "0.50"))
+
     cur.close()
-    return AssignTaskResponse(email=pool[1], password=pool[2], recovery_email=pool[3])
+    return AssignTaskResponse(
+        email=pool[1],
+        password=pool[2],
+        recovery_email=pool[3],
+        normal_rate=normal_rate,
+        two_fa_rate=two_fa_rate,
+    )
 
 
 @bot_router.post("/submit", response_model=MessageResponse)

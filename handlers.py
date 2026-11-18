@@ -175,19 +175,25 @@ async def btn_profile(message: Message):
 # ==========================================================================
 @router.message(F.text == "📋 Get Task")
 async def btn_get_task(message: Message, state: FSMContext):
-    wait = await message.answer("⏳ Assigning a task...")
+    wait = await message.answer("⏳ Finding a task for you...")
     try:
         result = await api.assign_task(message.from_user.id)
     except APIError as e:
         await wait.edit_text(f"⚠️ {e.detail}"); return
     except Exception:
-        await wait.edit_text("❌ Connection error."); return
+        await wait.edit_text("❌ Connection error. Try again."); return
+
+    normal_rate = result.get('normal_rate', 0.0)
+    two_fa_rate = result.get('two_fa_rate', 0.0)
 
     await wait.edit_text(
-        f"📋 <b>Task Assigned!</b>\n\n📧 <b>Email:</b> <code>{result.get('email','N/A')}</code>\n"
+        f"📋 <b>Task Assigned!</b>\n\n"
+        f"📧 <b>Email:</b> <code>{result.get('email','N/A')}</code>\n"
         f"🔑 <b>Password:</b> <code>{result.get('password','N/A')}</code>\n"
         f"🔄 <b>Recovery:</b> <code>{result.get('recovery_email','N/A')}</code>\n\n"
-        "Complete this account, then choose submission type:",
+        f"💰 <b>Rates:</b>\n"
+        f"   Normal: <b>${normal_rate:.2f}</b> | 2FA: <b>${two_fa_rate:.2f}</b>\n\n"
+        "✅ Complete this account, then choose submission type:",
         parse_mode="HTML", reply_markup=submission_type_keyboard(),
     )
     await state.update_data(assigned_email=result.get("email"), assigned_password=result.get("password"))
