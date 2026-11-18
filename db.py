@@ -1,27 +1,82 @@
 """
 db.py — Turso SQLite Dual Database Connection Layer
+Uses libsql_client (pure Python, works on Railway/Linux).
+Provides a compatibility wrapper so routes.py works unchanged.
+
 Database 1 (core_db): Users, Admins, Finances, Settings
 Database 2 (gmail_db): Gmail Pool, Submissions
 """
 
 import os
-import libsql_experimental as libsql
+import libsql_client
+
+
+# ---------------------------------------------------------------------------
+# Compatibility wrapper — same interface as libsql_experimental
+# so routes.py .execute().fetchone() / .fetchall() / .commit() all work
+# ---------------------------------------------------------------------------
+
+class _ResultProxy:
+    """Wraps libsql_client ResultSet to provide fetchone/fetchall."""
+    def __init__(self, rs):
+        self._rows = [tuple(row) for row in rs.rows] if rs and rs.rows else []
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return self._rows
+
+    def __getitem__(self, idx):
+        return self._rows[idx]
+
+    def __len__(self):
+        return len(self._rows)
+
+
+class _DBConnection:
+    """Wraps libsql_client sync client to match the old libsql_experimental API."""
+
+    def __init__(self, url: str, auth_token: str):
+        self._client = libsql_client.create_client_sync(
+            url=url,
+            auth_token=auth_token,
+        )
+
+    def execute(self, sql: str, params=None):
+        if params is not None:
+            if isinstance(params, (list, tuple)):
+                rs = self._client.execute(sql, params)
+            else:
+                rs = self._client.execute(sql, [params])
+        else:
+            rs = self._client.execute(sql)
+        return _ResultProxy(rs)
+
+    def commit(self):
+        # libsql_client HTTP mode auto-commits each statement
+        pass
+
+    def close(self):
+        self._client.close()
+
 
 # ---------------------------------------------------------------------------
 # Connection factories
 # ---------------------------------------------------------------------------
 
 def get_core_db():
-    return libsql.connect(
-        database=os.environ["TURSO_CORE_DB_URL"],
+    return _DBConnection(
+        url=os.environ["TURSO_CORE_DB_URL"],
         auth_token=os.environ["TURSO_CORE_DB_TOKEN"],
     )
 
 def get_gmail_db():
-    return libsql.connect(
-        database=os.environ["TURSO_GMAIL_DB_URL"],
+    return _DBConnection(
+        url=os.environ["TURSO_GMAIL_DB_URL"],
         auth_token=os.environ["TURSO_GMAIL_DB_TOKEN"],
     )
+
 
 # FastAPI dependencies (yield + close)
 def core_db_dep():
@@ -37,6 +92,7 @@ def gmail_db_dep():
         yield db
     finally:
         db.close()
+
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -116,12 +172,10 @@ def init_databases():
     if existing == 0:
         for k, v in DEFAULT_SETTINGS.items():
             core.execute("INSERT OR IGNORE INTO bot_settings (key_name, key_value) VALUES (?, ?)", (k, v))
-    core.commit()
     core.close()
 
     gmail = get_gmail_db()
     for stmt in GMAIL_SCHEMA:
         gmail.execute(stmt)
-    gmail.commit()
     gmail.close()
     print("[DB] Both databases initialised.")

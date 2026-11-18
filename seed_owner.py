@@ -15,11 +15,11 @@ except ImportError:
     pass
 
 try:
-    import libsql_experimental as libsql
+    import libsql_client
     from passlib.context import CryptContext
 except ImportError:
     print("ERROR: Required packages not installed.")
-    print("Run: pip install libsql-experimental passlib[bcrypt]")
+    print("Run: pip install libsql-client passlib[bcrypt]")
     sys.exit(1)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -58,24 +58,16 @@ def main():
 
     # Connect to database
     try:
-        db = libsql.connect(database=db_url, auth_token=db_token)
+        db = libsql_client.create_client_sync(url=db_url, auth_token=db_token)
     except Exception as e:
         print(f"ERROR connecting to database: {e}")
         sys.exit(1)
 
-    # Create admins table if not exists
-    db.execute("""CREATE TABLE IF NOT EXISTS admins (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        username      TEXT    UNIQUE NOT NULL,
-        password_hash TEXT    NOT NULL,
-        role          TEXT    NOT NULL CHECK(role IN ('owner','admin'))
-    )""")
-    db.commit()
-
     # Check if owner already exists
-    existing = db.execute("SELECT id, username FROM admins WHERE role='owner'").fetchone()
-    if existing:
-        print(f"\nWARNING: An owner account already exists: '{existing[1]}' (ID: {existing[0]})")
+    existing = db.execute("SELECT id, username FROM admins WHERE role='owner'")
+    if existing.rows:
+        row = existing.rows[0]
+        print(f"\nWARNING: An owner account already exists: '{row[1]}' (ID: {row[0]})")
         answer = input("Do you want to create another owner? (y/N): ").strip().lower()
         if answer != "y":
             print("Aborted.")
@@ -83,8 +75,8 @@ def main():
             sys.exit(0)
 
     # Check duplicate username
-    dup = db.execute("SELECT id FROM admins WHERE username=?", [username]).fetchone()
-    if dup:
+    dup = db.execute("SELECT id FROM admins WHERE username=?", [username])
+    if dup.rows:
         print(f"ERROR: Username '{username}' already exists.")
         db.close()
         sys.exit(1)
@@ -95,15 +87,14 @@ def main():
         "INSERT INTO admins (username, password_hash, role) VALUES (?, ?, 'owner')",
         [username, hashed],
     )
-    db.commit()
 
-    created = db.execute("SELECT id FROM admins WHERE username=?", [username]).fetchone()
+    created = db.execute("SELECT id FROM admins WHERE username=?", [username])
     db.close()
 
     print()
     print("✅ Owner account created successfully!")
     print(f"   Username: {username}")
-    print(f"   ID:       {created[0]}")
+    print(f"   ID:       {created.rows[0][0]}")
     print()
     print("You can now log in to the Desktop Admin Panel with these credentials.")
 
