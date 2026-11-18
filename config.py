@@ -1,5 +1,6 @@
 """
 config.py — All configuration loaded from environment variables.
+Supports multiple env-var naming conventions for Turso.
 """
 
 import os
@@ -7,11 +8,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Turso Databases ---
-TURSO_CORE_DB_URL = os.environ.get("TURSO_CORE_DB_URL", "")
-TURSO_CORE_DB_TOKEN = os.environ.get("TURSO_CORE_DB_TOKEN", "")
-TURSO_GMAIL_DB_URL = os.environ.get("TURSO_GMAIL_DB_URL", "")
-TURSO_GMAIL_DB_TOKEN = os.environ.get("TURSO_GMAIL_DB_TOKEN", "")
+# --- Turso Databases (accept multiple naming conventions) ---
+TURSO_CORE_DB_URL = (
+    os.environ.get("TURSO_CORE_DB_URL")
+    or os.environ.get("TURSO_CORE_DATABASE_URL")
+    or ""
+)
+TURSO_CORE_DB_TOKEN = (
+    os.environ.get("TURSO_CORE_DB_TOKEN")
+    or os.environ.get("TURSO_CORE_AUTH_TOKEN")
+    or ""
+)
+TURSO_GMAIL_DB_URL = (
+    os.environ.get("TURSO_GMAIL_DB_URL")
+    or os.environ.get("TURSO_GMAIL_DATABASE_URL")
+    or ""
+)
+TURSO_GMAIL_DB_TOKEN = (
+    os.environ.get("TURSO_GMAIL_DB_TOKEN")
+    or os.environ.get("TURSO_GMAIL_AUTH_TOKEN")
+    or ""
+)
 
 # --- Telegram Bot ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")

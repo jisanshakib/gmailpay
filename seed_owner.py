@@ -31,14 +31,32 @@ def main():
     print("=" * 50)
     print()
 
-    # Check env vars
-    db_url = os.environ.get("TURSO_CORE_DB_URL", "")
-    db_token = os.environ.get("TURSO_CORE_DB_TOKEN", "")
+    # Check env vars (accept both naming conventions)
+    db_url = (
+        os.environ.get("TURSO_CORE_DB_URL")
+        or os.environ.get("TURSO_CORE_DATABASE_URL")
+        or ""
+    )
+    db_token = (
+        os.environ.get("TURSO_CORE_DB_TOKEN")
+        or os.environ.get("TURSO_CORE_AUTH_TOKEN")
+        or ""
+    )
 
     if not db_url or not db_token:
-        print("ERROR: TURSO_CORE_DB_URL and TURSO_CORE_DB_TOKEN must be set.")
-        print("Set them in your .env file or environment variables.")
+        print("ERROR: Turso core DB URL and TOKEN must be set.")
+        print("Accepted env var names:")
+        print("  TURSO_CORE_DB_URL  or  TURSO_CORE_DATABASE_URL")
+        print("  TURSO_CORE_DB_TOKEN  or  TURSO_CORE_AUTH_TOKEN")
         sys.exit(1)
+
+    # Auto-fix URL protocol
+    if db_url.startswith("wss://"):
+        db_url = "libsql://" + db_url[len("wss://"):]
+    elif db_url.startswith("ws://"):
+        db_url = "libsql://" + db_url[len("ws://"):]
+    elif not db_url.startswith(("libsql://", "https://", "http://")):
+        db_url = "libsql://" + db_url
 
     # Get credentials
     username = input("Owner username: ").strip()

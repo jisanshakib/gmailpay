@@ -7,8 +7,50 @@ Database 1 (core_db): Users, Admins, Finances, Settings
 Database 2 (gmail_db): Gmail Pool, Submissions
 """
 
-import os
+import sys
+import config
 import libsql_client
+
+
+# ---------------------------------------------------------------------------
+# URL helper — auto-fix common protocol mistakes
+# ---------------------------------------------------------------------------
+
+def _fix_turso_url(raw_url: str) -> str:
+    """
+    Turso needs  libsql://  or  https://  for the HTTP driver.
+    Common mistakes:
+      wss://xxx.turso.io  → libsql://xxx.turso.io
+      xxx.turso.io        → libsql://xxx.turso.io
+    """
+    url = raw_url.strip()
+    if not url:
+        return url
+    if url.startswith("wss://"):
+        url = "libsql://" + url[len("wss://"):]
+    elif url.startswith("ws://"):
+        url = "libsql://" + url[len("ws://"):]
+    elif not url.startswith(("libsql://", "https://", "http://")):
+        url = "libsql://" + url
+    return url
+
+
+def _validate_url(url: str, label: str):
+    """Crash early with a clear message if the URL is empty or placeholder."""
+    if not url:
+        msg = f"[DB] ❌ {label} URL is EMPTY. Set the env var in Railway."
+        print(msg, file=sys.stderr)
+        raise RuntimeError(msg)
+    placeholders = ("placeholder", "example.com", "your-db", "tursocoredburl", "tursogmaildburl")
+    low = url.lower()
+    for ph in placeholders:
+        if ph in low:
+            msg = (
+                f"[DB] ❌ {label} URL looks like a placeholder: {url}\n"
+                f"     Set a real Turso database URL in Railway env vars."
+            )
+            print(msg, file=sys.stderr)
+            raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +108,14 @@ class _DBConnection:
 # ---------------------------------------------------------------------------
 
 def get_core_db():
-    return _DBConnection(
-        url=os.environ["TURSO_CORE_DB_URL"],
-        auth_token=os.environ["TURSO_CORE_DB_TOKEN"],
-    )
+    url = _fix_turso_url(config.TURSO_CORE_DB_URL)
+    _validate_url(url, "CORE_DB")
+    return _DBConnection(url=url, auth_token=config.TURSO_CORE_DB_TOKEN)
 
 def get_gmail_db():
-    return _DBConnection(
-        url=os.environ["TURSO_GMAIL_DB_URL"],
-        auth_token=os.environ["TURSO_GMAIL_DB_TOKEN"],
-    )
+    url = _fix_turso_url(config.TURSO_GMAIL_DB_URL)
+    _validate_url(url, "GMAIL_DB")
+    return _DBConnection(url=url, auth_token=config.TURSO_GMAIL_DB_TOKEN)
 
 
 # FastAPI dependencies (yield + close)
@@ -165,17 +205,41 @@ DEFAULT_SETTINGS = {
 
 def init_databases():
     """Create all tables and seed default settings. Call once at startup."""
-    core = get_core_db()
-    for stmt in CORE_SCHEMA:
-        core.execute(stmt)
-    existing = core.execute("SELECT COUNT(*) FROM bot_settings").fetchone()[0]
-    if existing == 0:
-        for k, v in DEFAULT_SETTINGS.items():
-            core.execute("INSERT OR IGNORE INTO bot_settings (key_name, key_value) VALUES (?, ?)", (k, v))
-    core.close()
+    # ---- Core DB ----
+    print("[DB] Connecting to core_db ...")
+    core_url = _fix_turso_url(config.TURSO_CORE_DB_URL)
+    print(f"[DB]   URL = {core_url[:40]}...")
+    try:
+        _validate_url(core_url, "CORE_DB")
+        core = _DBConnection(url=core_url, auth_token=config.TURSO_CORE_DB_TOKEN)
+        for stmt in CORE_SCHEMA:
+            core.execute(stmt)
+        existing = core.execute("SELECT COUNT(*) FROM bot_settings").fetchone()[0]
+        if existing == 0:
+            for k, v in DEFAULT_SETTINGS.items():
+                core.execute(
+                    "INSERT OR IGNORE INTO bot_settings (key_name, key_value) VALUES (?, ?)",
+                    (k, v),
+                )
+        core.close()
+        print("[DB] ✅ core_db ready.")
+    except Exception as e:
+        print(f"[DB] ❌ core_db FAILED: {e}", file=sys.stderr)
+        raise
 
-    gmail = get_gmail_db()
-    for stmt in GMAIL_SCHEMA:
-        gmail.execute(stmt)
-    gmail.close()
+    # ---- Gmail DB ----
+    print("[DB] Connecting to gmail_db ...")
+    gmail_url = _fix_turso_url(config.TURSO_GMAIL_DB_URL)
+    print(f"[DB]   URL = {gmail_url[:40]}...")
+    try:
+        _validate_url(gmail_url, "GMAIL_DB")
+        gmail = _DBConnection(url=gmail_url, auth_token=config.TURSO_GMAIL_DB_TOKEN)
+        for stmt in GMAIL_SCHEMA:
+            gmail.execute(stmt)
+        gmail.close()
+        print("[DB] ✅ gmail_db ready.")
+    except Exception as e:
+        print(f"[DB] ❌ gmail_db FAILED: {e}", file=sys.stderr)
+        raise
+
     print("[DB] Both databases initialised.")
